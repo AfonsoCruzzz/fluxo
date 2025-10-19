@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="car" accel="2.6" decel="4.5" length="5.0" maxSpeed="13.9" sigma="0.5"/>
+
+    <route id="south_to_north" edges="sm mn"/>
+    <route id="north_to_south" edges="nm ms"/>
+    <route id="west_to_east" edges="wm me"/>
+    <route id="east_to_west" edges="em mw"/>
+    <route id="east_to_north" edges="em mn"/>
+    <route id="west_to_north" edges="wm mn"/>
+
+    <vehicle id="veh0" type="car" depart="0" route="south_to_north"/>
+    <vehicle id="veh1" type="car" depart="5" route="north_to_south"/>
+    <vehicle id="veh2" type="car" depart="10" route="west_to_east"/>
+    <vehicle id="veh3" type="car" depart="12" route="east_to_west"/>
+    <vehicle id="veh4" type="car" depart="20" route="east_to_north"/>
+    <vehicle id="veh5" type="car" depart="25" route="west_to_north"/>
+</routes>
