@@ -473,28 +473,41 @@ class UniversalTrafficAgent(Agent):
     def find_sumo_binary(self):
         """Encontrar executável SUMO de forma robusta"""
         binaries = ["sumo-gui", "sumo", "sumoD", "sumo-guiD"]
-        
+
+        # 1) Tentar descobrir via PATH
         for binary in binaries:
             try:
                 result = subprocess.run(["which", binary], capture_output=True, text=True)
                 if result.returncode == 0:
                     return result.stdout.strip()
-            except:
+            except Exception:
                 continue
-        
-        # Tentar caminhos absolutos comuns
+
+        # 2) Verificar SUMO_HOME configurado (ex: instalação pkg no macOS)
+        sumo_home = os.environ.get("SUMO_HOME")
+        if sumo_home:
+            for binary in binaries:
+                candidate = os.path.join(sumo_home, "bin", binary)
+                if os.path.exists(candidate):
+                    return candidate
+
+        # 3) Tentar caminhos absolutos comuns
         common_paths = [
+            "/Library/Frameworks/EclipseSUMO.framework/Versions/Current/EclipseSUMO/bin/sumo",
+            "/Library/Frameworks/EclipseSUMO.framework/Versions/Current/EclipseSUMO/bin/sumo-gui",
+            "/Library/Frameworks/EclipseSUMO.framework/Versions/Current/EclipseSUMO/share/sumo/bin/sumo",
+            "/Library/Frameworks/EclipseSUMO.framework/Versions/Current/EclipseSUMO/share/sumo/bin/sumo-gui",
             "/usr/bin/sumo",
             "/usr/local/bin/sumo",
             "/app/bin/sumo",  # Flatpak
             "/snap/bin/sumo",  # Snap
             "/var/lib/flatpak/app/org.eclipse.sumo/current/active/files/bin/sumo",
         ]
-        
+
         for path in common_paths:
             if os.path.exists(path):
                 return path
-                
+
         return None
     
     async def on_stop(self):

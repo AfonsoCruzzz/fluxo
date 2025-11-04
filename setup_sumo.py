@@ -6,31 +6,73 @@ SUMO_FILES_DIR = os.path.join(CURRENT_DIR, "sumo_files")
 DEFAULT_SUMO_CONFIG = "cross.sumocfg"
 
 
+def _registrar_sumo_home(sumo_home: str) -> bool:
+    """Validar diretório e configurar variáveis/paths necessários."""
+    if not sumo_home or not os.path.isdir(sumo_home):
+        return False
+
+    tools_dir = os.path.join(sumo_home, "tools")
+    if not os.path.isdir(tools_dir):
+        return False
+
+    os.environ["SUMO_HOME"] = sumo_home
+
+    # Garantir que o Python encontre as bibliotecas do SUMO
+    for path_option in (sumo_home, tools_dir, os.path.join(tools_dir, "python")):
+        if os.path.isdir(path_option) and path_option not in sys.path:
+            sys.path.append(path_option)
+            print(f"✅ Path adicionado ao Python: {path_option}")
+
+    print(f"✅ SUMO encontrado em: {sumo_home}")
+    return True
+
+
 def configurar_sumo():
-    """Configurar SUMO para instalação via Flatpak."""
+    """Configurar SUMO considerando instalações Flatpak, macOS pkg e padrões comuns."""
+    candidatos = []
+
+    # 1. Respeitar SUMO_HOME já definido
+    sumo_home_env = os.environ.get("SUMO_HOME")
+    if sumo_home_env:
+        candidatos.append(sumo_home_env)
+
+    # 2. Caminhos padrão do Flatpak
     flatpak_paths = [
         "/var/lib/flatpak/app/org.eclipse.sumo/current/active/files",
         os.path.expanduser("~/.local/share/flatpak/app/org.eclipse.sumo/current/active/files"),
         "/app",  # Dentro do próprio Flatpak
     ]
+    candidatos.extend(flatpak_paths)
 
-    for path in flatpak_paths:
-        if os.path.exists(path):
-            print(f"✅ Flatpak SUMO encontrado em: {path}")
-            os.environ["SUMO_HOME"] = path
+    # 3. Instalação oficial via pacote macOS (framework)
+    mac_versions_base = "/Library/Frameworks/EclipseSUMO.framework/Versions"
+    candidatos.append(os.path.join(mac_versions_base, "Current", "EclipseSUMO", "share", "sumo"))
+    if os.path.isdir(mac_versions_base):
+        for version_dir in os.listdir(mac_versions_base):
+            candidatos.append(
+                os.path.join(mac_versions_base, version_dir, "EclipseSUMO", "share", "sumo")
+            )
 
-            # Adicionar ao Python path
-            if path not in sys.path:
-                sys.path.append(path)
+    # 4. Outras instalações comuns (Homebrew, system wide)
+    candidatos.extend(
+        [
+            "/opt/homebrew/opt/sumo/share/sumo",
+            "/usr/local/opt/sumo/share/sumo",
+            "/usr/share/sumo",
+            "/opt/sumo",
+        ]
+    )
 
-            python_tools_path = os.path.join(path, "tools", "python")
-            if os.path.exists(python_tools_path) and python_tools_path not in sys.path:
-                sys.path.append(python_tools_path)
-                print(f"✅ Tools/python path adicionado: {python_tools_path}")
+    vistos = set()
+    for candidato in candidatos:
+        if candidato in vistos:
+            continue
+        vistos.add(candidato)
 
+        if _registrar_sumo_home(candidato):
             return True
 
-    print("❌ Flatpak SUMO não encontrado nos caminhos padrão")
+    print("❌ SUMO não encontrado nos caminhos conhecidos. Defina SUMO_HOME manualmente.")
     return False
 
 
