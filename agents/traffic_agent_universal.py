@@ -1,11 +1,12 @@
 import asyncio
 import spade
 from spade.agent import Agent
-from spade.behaviour import PeriodicBehaviour
+from spade.behaviour import PeriodicBehaviour, CyclicBehaviour
 from spade.message import Message
 import os
 import sys
 import subprocess
+import math
 
 # Define current_dir as the directory of the current script
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -28,7 +29,7 @@ class UniversalTrafficAgent(Agent):
         self,
         jid,
         password,
-        sumo_config=os.path.join(current_dir, "sumo_files", "cross.sumocfg"),
+        sumo_config=os.path.join(current_dir, "sumo_files", "simple.sumocfg"),
         monitor_jid=None,
     ):
         super().__init__(jid, password)
@@ -41,6 +42,8 @@ class UniversalTrafficAgent(Agent):
         print(f"📊 SUMO disponível: {SUMO_AVAILABLE}")
         print(f"📊 TRACI disponível: {TRACI_AVAILABLE}")
         
+        self.add_behaviour(self.MonitorCommandListener())
+
         if TRACI_AVAILABLE and self.sumo_config:
             await self.start_simulation()
             self.add_behaviour(self.RealTrafficBehaviour(period=1.0))
@@ -64,6 +67,9 @@ class UniversalTrafficAgent(Agent):
             self.min_left_green = 3.0
             self.max_left_green = 15.0
             self.clearance_duration = 2.0
+            self.turn_angle_threshold = 35.0  # graus para diferenciar conversões
+            self.opponent_clear_threshold = 2  # veículos tolerados no eixo oposto
+            self.queue_difference_trigger = 5  # diferença mínima para preempção
 
         async def run(self):
             try:
@@ -130,21 +136,16 @@ class UniversalTrafficAgent(Agent):
                             f"🚦 Semáforo {tl_id}: {data['vehicles_since_switch']} veículo(s) desde a última troca"
                         )
 
+                    if self._advance_if_lonely_vehicle(tl_id, data):
+                        continue
+
                     self._adaptive_control(tl_id, data, sim_time)
 
                     if (
                         self.pass_threshold is not None
-                        and not data["holding_red"]
                         and data["vehicles_since_switch"] >= self.pass_threshold
                     ):
-                        self._force_red(tl_id, data, sim_time)
-
-                    elif (
-                        data["holding_red"]
-                        and data["red_release_time"] is not None
-                        and sim_time >= data["red_release_time"]
-                    ):
-                        self._restore_program(tl_id, data)
+                        self._force_phase_change(tl_id, data, sim_time)
 
             except Exception as e:
                 print(f"❌ Erro na simulação: {e}")
@@ -193,41 +194,121 @@ class UniversalTrafficAgent(Agent):
         def _cleanup_observed(self, data, active_ids):
             data["observed_after_light"].intersection_update(active_ids)
 
-        def _prepare_lane_groups(self):
+        def _advance_if_lonely_vehicle(self, tl_id, data):
             try:
-                from collections import defaultdict
-
-                dynamic_groups = defaultdict(list)
-                for tl_id in traci.trafficlight.getIDList():
-                    controlled = traci.trafficlight.getControlledLinks(tl_id)
-                    for link_group in controlled:
-                        if not link_group:
-                            continue
-                        entry_lane = link_group[0][0]
-                        exit_lane = link_group[0][1]
-                        if "_left" in entry_lane:
-                            dynamic_groups["LEFT"].append(entry_lane)
-                        else:
-                            dynamic_groups["MAIN"].append(entry_lane)
+                lanes = traci.trafficlight.getControlledLanes(tl_id)
             except traci.TraCIException:
-                dynamic_groups = {}
+                return False
 
-            if dynamic_groups:
-                self.lane_groups = {
-                    "EW_MAIN": [lane for lane in dynamic_groups["MAIN"] if lane.startswith("1") or lane.startswith("2")],
-                    "EW_LEFT": [lane for lane in dynamic_groups["LEFT"] if lane.startswith("1") or lane.startswith("2")],
-                    "NS_MAIN": [lane for lane in dynamic_groups["MAIN"] if lane.startswith("3") or lane.startswith("4")],
-                    "NS_LEFT": [lane for lane in dynamic_groups["LEFT"] if lane.startswith("3") or lane.startswith("4")],
-                }
-                print(f"🛣️ Grupos de faixas detectados dinamicamente: {self.lane_groups}")
-            else:
-                self.lane_groups = {
-                    "EW_MAIN": ["1si_0", "1si_1", "2si_0", "2si_1"],
-                    "EW_LEFT": ["1si_2", "2si_2"],
-                    "NS_MAIN": ["3si_0", "4si_0"],
-                    "NS_LEFT": ["3si_1", "4si_1"],
-                }
-                print("🛣️ Usando grupos de faixas padrão configurados manualmente.")
+            if not lanes:
+                return False
+
+            axis_queue = {"EW": 0, "NS": 0}
+            for lane_id in lanes:
+                orientation, _ = self._classify_lane(lane_id)
+                if orientation is None:
+                    continue
+                try:
+                    queue = traci.lane.getLastStepHaltingNumber(lane_id)
+                except traci.TraCIException:
+                    queue = 0
+                axis_queue[orientation] += queue
+
+            ew = axis_queue["EW"]
+            ns = axis_queue["NS"]
+            chosen_axis = None
+            reason = None
+
+            if ew > 0 and ns == 0:
+                chosen_axis = "EW"
+                reason = "sem demanda oposta"
+            elif ns > 0 and ew == 0:
+                chosen_axis = "NS"
+                reason = "sem demanda oposta"
+            elif (
+                ew - ns >= self.queue_difference_trigger
+                and ns <= self.opponent_clear_threshold
+            ):
+                chosen_axis = "EW"
+                reason = "diferença de fila"
+            elif (
+                ns - ew >= self.queue_difference_trigger
+                and ew <= self.opponent_clear_threshold
+            ):
+                chosen_axis = "NS"
+                reason = "diferença de fila"
+
+            if not chosen_axis:
+                return False
+
+            try:
+                traci.trafficlight.setPhaseDuration(tl_id, 0)
+                data["vehicles_since_switch"] = 0
+                print(
+                    f"🟢 Semáforo {tl_id} acelerado (eixo {chosen_axis}) - {reason}"
+                )
+                return True
+            except traci.TraCIException:
+                return False
+
+        def _prepare_lane_groups(self):
+            groups = {
+                "EW_MAIN": [],
+                "EW_LEFT": [],
+                "NS_MAIN": [],
+                "NS_LEFT": [],
+            }
+
+            try:
+                for tl_id in traci.trafficlight.getIDList():
+                    for lane_id in traci.trafficlight.getControlledLanes(tl_id):
+                        orientation, is_turn = self._classify_lane(lane_id)
+                        if orientation is None:
+                            continue
+                        if orientation == "EW":
+                            target = "EW_LEFT" if is_turn else "EW_MAIN"
+                        else:
+                            target = "NS_LEFT" if is_turn else "NS_MAIN"
+                        if lane_id not in groups[target]:
+                            groups[target].append(lane_id)
+            except traci.TraCIException:
+                pass
+
+            self.lane_groups = groups
+            print(f"🛣️ Grupos de faixas configurados automaticamente: {self.lane_groups}")
+
+        def _classify_lane(self, lane_id):
+            try:
+                shape = traci.lane.getShape(lane_id)
+            except traci.TraCIException:
+                return None, None
+
+            if len(shape) < 2:
+                return None, None
+
+            start = shape[0]
+            end = shape[-1]
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            orientation = "EW" if abs(dx) >= abs(dy) else "NS"
+            is_turn = self._lane_turn_angle(shape) >= self.turn_angle_threshold
+            return orientation, is_turn
+
+        def _lane_turn_angle(self, shape):
+            if len(shape) < 3:
+                return 0.0
+
+            v_start = (shape[1][0] - shape[0][0], shape[1][1] - shape[0][1])
+            v_end = (shape[-1][0] - shape[-2][0], shape[-1][1] - shape[-2][1])
+
+            start_mag = math.hypot(*v_start)
+            end_mag = math.hypot(*v_end)
+            if not start_mag or not end_mag:
+                return 0.0
+
+            dot = v_start[0] * v_end[0] + v_start[1] * v_end[1]
+            cosang = max(-1.0, min(1.0, dot / (start_mag * end_mag)))
+            return math.degrees(math.acos(cosang))
 
         def _adaptive_control(self, tl_id, data, sim_time):
             try:
@@ -367,54 +448,34 @@ class UniversalTrafficAgent(Agent):
             else:
                 self.pass_threshold = None
 
-        def _force_red(self, tl_id, data, sim_time):
+        def _force_phase_change(self, tl_id, data, sim_time):
             try:
-                try:
-                    data["previous_phase"] = traci.trafficlight.getPhase(tl_id)
-                    next_switch = traci.trafficlight.getNextSwitch(tl_id)
-                    data["phase_remaining"] = max(0.0, next_switch - sim_time) if next_switch else None
-                except traci.TraCIException:
-                    data["previous_phase"] = None
-                    data["phase_remaining"] = None
-
-                current_state = traci.trafficlight.getRedYellowGreenState(tl_id)
-                data["previous_state"] = current_state
-                red_state = "r" * len(current_state)
-                traci.trafficlight.setRedYellowGreenState(tl_id, red_state)
-                data["holding_red"] = True
-                data["red_release_time"] = sim_time + self.red_duration
+                current_phase = traci.trafficlight.getPhase(tl_id)
+                phase_count = self._compute_phase_count(tl_id)
+                next_phase = (current_phase + 1) % max(1, phase_count)
+                traci.trafficlight.setPhase(tl_id, next_phase)
                 data["vehicles_since_switch"] = 0
+                data["last_phase"] = next_phase
+                data["last_phase_set_time"] = sim_time
                 print(
-                    (f"🔴 Semáforo {tl_id} em vermelho por {self.red_duration}s "
-                     f"após {self.pass_threshold} veículos" if self.pass_threshold is not None else
-                     f"🔴 Semáforo {tl_id} mantido em vermelho por {self.red_duration}s")
+                    f"🔁 Semáforo {tl_id} avançado para fase {next_phase} após {self.pass_threshold} veículos"
                 )
             except traci.TraCIException as e:
-                print(f"❌ Erro ao alterar semáforo {tl_id}: {e}")
+                print(f"❌ Erro ao forçar troca do semáforo {tl_id}: {e}")
 
-        def _restore_program(self, tl_id, data):
+        def _compute_phase_count(self, tl_id):
             try:
-                default_program = data.get("default_program")
-                if default_program is not None:
-                    traci.trafficlight.setProgram(tl_id, default_program)
-                    if data.get("previous_phase") is not None:
-                        traci.trafficlight.setPhase(tl_id, data["previous_phase"])
-                        if data.get("phase_remaining"):
-                            traci.trafficlight.setPhaseDuration(
-                                tl_id, max(0.1, data["phase_remaining"])
-                            )
-                elif data.get("previous_state"):
-                    traci.trafficlight.setRedYellowGreenState(tl_id, data["previous_state"])
+                return traci.trafficlight.getPhaseNumber(tl_id)
+            except AttributeError:
+                pass
 
-                data["holding_red"] = False
-                data["red_release_time"] = None
-                data["previous_state"] = None
-                data["previous_phase"] = None
-                data["phase_remaining"] = None
-                data["observed_after_light"].clear()
-                print(f"🟢 Semáforo {tl_id} liberado para verde")
-            except traci.TraCIException as e:
-                print(f"❌ Erro ao liberar semáforo {tl_id}: {e}")
+            try:
+                definitions = traci.trafficlight.getCompleteRedYellowGreenDefinition(tl_id)
+                if definitions:
+                    return len(definitions[0].phases)
+            except traci.TraCIException:
+                pass
+            return 1
     
     class SimulatedTrafficBehaviour(PeriodicBehaviour):
         def __init__(self, period):
@@ -439,6 +500,20 @@ class UniversalTrafficAgent(Agent):
                 )
             
             print(f"📊 Passo de simulação: {self.step}")
+
+    class MonitorCommandListener(CyclicBehaviour):
+        async def run(self):
+            msg = await self.receive(timeout=1)
+            if not msg or not msg.body:
+                return
+
+            if msg.body.startswith("TRAFFIC_ALERT"):
+                parts = msg.body.split("|")
+                if len(parts) < 3:
+                    return
+                vehicle_id = parts[1]
+                status = parts[2]
+                await self.agent.handle_monitor_alert(vehicle_id, status)
     
     async def start_simulation(self):
         """Iniciar simulação SUMO de forma robusta"""
@@ -516,6 +591,35 @@ class UniversalTrafficAgent(Agent):
                 traci.close()
             except:
                 pass
+
+    async def handle_monitor_alert(self, vehicle_id, status):
+        if status != "lento":
+            return
+
+        print(f"📨 Controlador recebeu alerta de veículo lento: {vehicle_id}")
+
+        if not TRACI_AVAILABLE:
+            print("ℹ️  Sem TRACI disponível; alerta registrado apenas para logging")
+            return
+
+        try:
+            next_tls = traci.vehicle.getNextTLS(vehicle_id)
+            if not next_tls:
+                print(f"ℹ️  {vehicle_id} não possui semáforo à frente para priorizar")
+                return
+
+            tl_id = next_tls[0][0]
+            self._force_priority_green(tl_id)
+            print(f"🟢 Semáforo {tl_id} ajustado para priorizar {vehicle_id}")
+        except traci.TraCIException as exc:
+            print(f"⚠️  Falha ao priorizar veículo {vehicle_id}: {exc}")
+
+    def _force_priority_green(self, tl_id, duration=15):
+        try:
+            traci.trafficlight.setPhase(tl_id, 0)
+            traci.trafficlight.setPhaseDuration(tl_id, duration)
+        except traci.TraCIException as exc:
+            print(f"⚠️  Não foi possível ajustar semáforo {tl_id}: {exc}")
 
     async def notify_monitor(self, vehicle_id, position, speed, behaviour):
         """Enviar atualização para o agente monitor usando o comportamento chamador."""

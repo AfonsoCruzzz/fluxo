@@ -5,6 +5,10 @@ from spade.behaviour import CyclicBehaviour
 from spade.message import Message
 
 class TrafficMonitorAgent(Agent):
+    def __init__(self, jid, password, controller_jid=None):
+        super().__init__(jid, password)
+        self.controller_jid = controller_jid
+
     class MonitorBehaviour(CyclicBehaviour):
         async def run(self):
             # Aguardar mensagens do controlador
@@ -25,7 +29,20 @@ class TrafficMonitorAgent(Agent):
             """Analisar tráfego e tomar decisões"""
             if speed < 5:
                 print(f"⚠️  ALERTA: {vehicle_id} está muito lento!")
-                # Poderia enviar comando para ajustar semáforos, etc.
+                await self.notify_controller(vehicle_id, "lento")
+
+        async def notify_controller(self, vehicle_id, status):
+            controller = self.agent.controller_jid
+            if not controller:
+                return
+
+            msg = Message(to=controller)
+            msg.body = f"TRAFFIC_ALERT|{vehicle_id}|{status}"
+            try:
+                await self.send(msg)
+                print(f"📨 MONITOR: alerta '{status}' enviado para controlador ({vehicle_id})")
+            except Exception as exc:
+                print(f"⚠️  Monitor não conseguiu notificar controlador: {exc}")
 
     async def setup(self):
         print("📊 Iniciando Agente Monitor de Tráfego...")

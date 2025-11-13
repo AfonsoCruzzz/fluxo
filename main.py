@@ -31,7 +31,7 @@ _garantir_compatibilidade_slixmpp()
 
 async def main():
     # Escolher mapa padrão (interseção clássica)
-    sumo_config = criar_arquivos_sumo("cross.sumocfg")
+    sumo_config = criar_arquivos_sumo("simple.sumocfg")
     
     print("🚀 Iniciando Sistema de Tráfego Inteligente...")
     
@@ -45,7 +45,8 @@ async def main():
     
     traffic_monitor = TrafficMonitorAgent(
         "monitor@localhost", 
-        "senha"
+        "senha",
+        controller_jid="traffic_controller@localhost"
     )
     
     # Iniciar agentes
