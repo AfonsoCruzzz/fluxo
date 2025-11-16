@@ -42,6 +42,7 @@
 
 <routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
     <vType id="car" accel="2.6" decel="4.5" sigma="0.5" length="5.0" maxSpeed="13.9" guiShape="passenger"/>
+    <vType id="ambulance" accel="3.2" decel="5.5" sigma="0.4" length="5.0" maxSpeed="16.7" color="1,0,0" guiShape="emergency"/>
     <vehicle id="veh0" type="car" depart="0.00" departLane="best" departSpeed="max">
         <route edges="A1B1 B1B2 B2A2 A2A3"/>
     </vehicle>
@@ -62,6 +63,9 @@
     </vehicle>
     <vehicle id="veh6" type="car" depart="4.80" departLane="best" departSpeed="max">
         <route edges="B1C1 C1C0 C0B0 B0A0 A0A1"/>
+    </vehicle>
+    <vehicle id="ambulance0" type="ambulance" depart="5.50" departLane="best" departSpeed="max">
+        <route edges="C3B3 B3B2 B2A2 A2A1"/>
     </vehicle>
     <vehicle id="veh7" type="car" depart="5.60" departLane="best" departSpeed="max">
         <route edges="C1B1 B1A1 A1A2 A2B2"/>
@@ -138,6 +142,9 @@
     <vehicle id="veh31" type="car" depart="24.80" departLane="best" departSpeed="max">
         <route edges="D0D1 D1C1 C1B1 B1A1 A1A0 A0B0"/>
     </vehicle>
+    <vehicle id="ambulance1" type="ambulance" depart="25.00" departLane="best" departSpeed="max">
+        <route edges="E2D2 D2C2 C2C1 C1B1 B1A1"/>
+    </vehicle>
     <vehicle id="veh32" type="car" depart="25.60" departLane="best" departSpeed="max">
         <route edges="B4A4 A4A3 A3A2 A2A1 A1B1 B1B2"/>
     </vehicle>
@@ -212,6 +219,9 @@
     </vehicle>
     <vehicle id="veh56" type="car" depart="44.80" departLane="best" departSpeed="max">
         <route edges="A4A3 A3A2 A2B2 B2C2 C2D2 D2D1 D1C1"/>
+    </vehicle>
+    <vehicle id="ambulance2" type="ambulance" depart="45.00" departLane="best" departSpeed="max">
+        <route edges="A0A1 A1B1 B1C1 C1D1 D1D2"/>
     </vehicle>
     <vehicle id="veh57" type="car" depart="45.60" departLane="best" departSpeed="max">
         <route edges="E2E1 E1D1 D1D2 D2D3 D3D4"/>
