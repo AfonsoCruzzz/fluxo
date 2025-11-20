@@ -3,7 +3,7 @@ import sys
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 SUMO_FILES_DIR = os.path.join(CURRENT_DIR, "sumo_files")
-DEFAULT_SUMO_CONFIG = "cross.sumocfg"
+DEFAULT_SUMO_CONFIG = "simple.sumocfg"
 
 
 def _registrar_sumo_home(sumo_home: str) -> bool:

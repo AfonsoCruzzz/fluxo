@@ -1,97 +1,83 @@
-import asyncio
-import inspect
-import spade
-from spade.xmpp_client import XMPPClient
-from agents.traffic_agent_universal import UniversalTrafficAgent
-from agents.monitor_agent import TrafficMonitorAgent
-from agents.vehicle_agent import VehicleAgent
-from setup_sumo import criar_arquivos_sumo
+import sys
+import time
+from typing import Optional
+
+from agents import TrafficLightAgent, VehicleAgent
+from setup_sumo import DEFAULT_SUMO_CONFIG, configurar_sumo, criar_arquivos_sumo
 
 
-def _garantir_compatibilidade_slixmpp():
-    assinatura = inspect.signature(XMPPClient.connect)
-    if "host" in assinatura.parameters:
-        return
+def run_simulation(
+    config_name: str = DEFAULT_SUMO_CONFIG,
+    max_steps: int = 600,
+    spawn_interval: int = 20,
+    use_gui: bool = True,
+    sleep_per_step: Optional[float] = None,
+) -> None:
+    """
+    Launch SUMO and run two agent types:
+      - VehicleAgent spawns traffic on predefined routes.
+      - One TrafficLightAgent per intersection cycles through its own phases.
+    """
+    if not configurar_sumo():
+        sys.exit("❌ SUMO não encontrado. Defina a variável de ambiente SUMO_HOME ou ajuste o setup.")
 
-    original_connect = XMPPClient.connect
-
-    def patched_connect(self, *args, **kwargs):
-        host = kwargs.pop("host", None)
-        port = kwargs.pop("port", None)
-        if host is not None and "address" not in kwargs:
-            if port is None:
-                port = getattr(self, "xmpp_port", None) or getattr(self, "port", None) or 5222
-            kwargs["address"] = (host, port)
-        return original_connect(self, *args, **kwargs)
-
-    XMPPClient.connect = patched_connect
-
-
-_garantir_compatibilidade_slixmpp()
-
-async def main():
-    # Sistema multiagente atual:
-    #  - UniversalTrafficAgent (Features 1,4,6,7,8 parciais): coordena ambiente SUMO, ajusta tempos, prioriza emergência.
-    #  - TrafficMonitorAgent (Feature 3/8): regista veículos, detecta lentos, reporta métricas básicas.
-    #  - VehicleAgent (Feature 3): gera/monitora veículos, mede tempos de espera e solicita prioridade.
-    #  Pontos pendentes: agentes de semáforo individuais, agente de previsão de disrupções, módulo formal de métricas.
-    sumo_config = criar_arquivos_sumo("simple.sumocfg")
-    
-    print("🚀 Iniciando Sistema de Tráfego Inteligente...")
-    
-    # Criar agentes
-    traffic_controller = UniversalTrafficAgent(
-        "traffic_controller@localhost",
-        "senha",
-        sumo_config,
-        monitor_jid="monitor@localhost",
-        vehicle_jid="vehicle@localhost",
-    )
-    
-    traffic_monitor = TrafficMonitorAgent(
-        "monitor@localhost", 
-        "senha",
-        controller_jid="traffic_controller@localhost"
-    )
-
-    if sumo_config:
-        pattern_routes = []
-        tracked = {"ambulance0", "ambulance1", "ambulance2"}
-    else:
-        pattern_routes = [
-            {"id_prefix": "north", "start": (0, 220), "end": (0, -220), "spawn_interval": 5.5, "speed": 13.0},
-            {"id_prefix": "south", "start": (0, -220), "end": (0, 220), "spawn_interval": 6.0, "speed": 12.5},
-            {"id_prefix": "east", "start": (-220, 0), "end": (220, 0), "spawn_interval": 4.8, "speed": 13.5},
-            {"id_prefix": "west", "start": (220, 0), "end": (-220, 0), "spawn_interval": 5.2, "speed": 12.0},
-            {"id_prefix": "ambulance", "start": (-200, -40), "end": (200, -40), "spawn_interval": 45.0, "speed": 16.0, "vehicle_type": "ambulance"},
-        ]
-        tracked = set()
-    
-    vehicle_agent = VehicleAgent(
-        "vehicle@localhost",
-        "senha",
-        controller_jid="traffic_controller@localhost",
-        # tracked_vehicles={"ambulance0", "ambulance1", "ambulance2"},
-        monitor_jid="monitor@localhost",
-        tracked_vehicles=tracked,
-        pattern_routes=pattern_routes,
-        pattern_period=1.0,
-    )
-    
-    # Iniciar agentes
-    await traffic_controller.start()
-    await traffic_monitor.start()
-    await vehicle_agent.start()
-    
-    print("✅ Sistema iniciado. Pressione Ctrl+C para parar.")
-    
     try:
-        await asyncio.Future()
+        from sumolib import checkBinary
+        import traci
+    except ImportError as exc:
+        sys.exit(f"❌ Dependências do SUMO não disponíveis: {exc}")
+
+    config_path = criar_arquivos_sumo(config_name)
+    binary = checkBinary("sumo-gui" if use_gui else "sumo")
+
+    cmd = [
+        binary,
+        "-c",
+        config_path,
+        "--start",
+        "--quit-on-end",
+        "--step-length",
+        "1.0",
+        "--ignore-route-errors",
+        "true",
+        "--time-to-teleport",
+        "-1",
+    ]
+
+    print(f"🚀 Iniciando SUMO {'GUI' if use_gui else 'CLI'} com configuração '{config_name}'...")
+    traci.start(cmd)
+
+    traffic_light_ids = traci.trafficlight.getIDList()
+    traffic_light_agents = [TrafficLightAgent(tl_id) for tl_id in traffic_light_ids]
+    for agent in traffic_light_agents:
+        agent.initialize()
+
+    vehicle_agent = VehicleAgent(spawn_interval=spawn_interval)
+
+    print(f"🚦 Semáforos controlados: {', '.join(traffic_light_ids) if traffic_light_ids else 'nenhum encontrado'}")
+    print(f"🚗 Gerador de veículos ativo (intervalo: {spawn_interval} passos).")
+
+    step_index = 0
+    if sleep_per_step is None:
+        sleep_per_step = 0.2 if use_gui else 0.0
+
+    try:
+        while step_index < max_steps:
+            for tl_agent in traffic_light_agents:
+                tl_agent.step()
+            vehicle_agent.step(step_index)
+
+            traci.simulationStep()
+            step_index += 1
+
+            if sleep_per_step > 0:
+                time.sleep(sleep_per_step)
     except KeyboardInterrupt:
-        print("🛑 Parando sistema...")
-        await traffic_controller.stop()
-        await traffic_monitor.stop()
-        await vehicle_agent.stop()
+        print("🛑 Encerrando simulação...")
+    finally:
+        traci.close(False)
+        print("✅ SUMO encerrado.")
+
 
 if __name__ == "__main__":
-    spade.run(main())
+    run_simulation()
