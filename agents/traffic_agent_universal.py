@@ -54,7 +54,7 @@ class UniversalTrafficAgent(Agent):
         print(f"📊 SUMO disponível: {SUMO_AVAILABLE}")
         print(f"📊 TRACI disponível: {TRACI_AVAILABLE}")
         
-        self.add_behaviour(self.MonitorCommandListener())
+        self.add_behaviour(self.MonitorCommandListener())  # ✅ Features 1,4,6,7 aqui
 
         if TRACI_AVAILABLE and self.sumo_config:
             await self.start_simulation()

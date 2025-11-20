@@ -129,6 +129,7 @@ class VehicleAgent(Agent):
             return vehicle
 
     async def handle_vehicle_update(self, vehicle_id, speed, behaviour):
+        # ✅ Feature 3 (Vehicle Agents): monitor every vehicle and act on long waits
         if self.tracked_vehicles and vehicle_id not in self.tracked_vehicles:
             return
 

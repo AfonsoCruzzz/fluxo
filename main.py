@@ -30,7 +30,11 @@ def _garantir_compatibilidade_slixmpp():
 _garantir_compatibilidade_slixmpp()
 
 async def main():
-    # Escolher mapa padrão (interseção clássica)
+    # Sistema multiagente atual:
+    #  - UniversalTrafficAgent (Features 1,4,6,7,8 parciais): coordena ambiente SUMO, ajusta tempos, prioriza emergência.
+    #  - TrafficMonitorAgent (Feature 3/8): regista veículos, detecta lentos, reporta métricas básicas.
+    #  - VehicleAgent (Feature 3): gera/monitora veículos, mede tempos de espera e solicita prioridade.
+    #  Pontos pendentes: agentes de semáforo individuais, agente de previsão de disrupções, módulo formal de métricas.
     sumo_config = criar_arquivos_sumo("simple.sumocfg")
     
     print("🚀 Iniciando Sistema de Tráfego Inteligente...")
