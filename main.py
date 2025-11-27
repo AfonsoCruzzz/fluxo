@@ -1,97 +1,71 @@
-import asyncio
-import inspect
-import spade
-from spade.xmpp_client import XMPPClient
-from agents.traffic_agent_universal import UniversalTrafficAgent
-from agents.monitor_agent import TrafficMonitorAgent
-from agents.vehicle_agent import VehicleAgent
-from setup_sumo import criar_arquivos_sumo
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from typing import Optional
+
+from setup_sumo import configurar_sumo, criar_arquivos_sumo
 
 
-def _garantir_compatibilidade_slixmpp():
-    assinatura = inspect.signature(XMPPClient.connect)
-    if "host" in assinatura.parameters:
-        return
-
-    original_connect = XMPPClient.connect
-
-    def patched_connect(self, *args, **kwargs):
-        host = kwargs.pop("host", None)
-        port = kwargs.pop("port", None)
-        if host is not None and "address" not in kwargs:
-            if port is None:
-                port = getattr(self, "xmpp_port", None) or getattr(self, "port", None) or 5222
-            kwargs["address"] = (host, port)
-        return original_connect(self, *args, **kwargs)
-
-    XMPPClient.connect = patched_connect
+def _resolver_config(config_arg: str) -> str:
+    """Return an absolute path to a SUMO config file."""
+    if os.path.isabs(config_arg) or os.path.exists(config_arg):
+        return os.path.abspath(config_arg)
+    return criar_arquivos_sumo(config_arg)
 
 
-_garantir_compatibilidade_slixmpp()
+def _encontrar_binario_sumo() -> Optional[str]:
+    """Prefer sumo-gui and fall back to sumo if needed."""
+    candidatos: list[str] = []
 
-async def main():
-    # Sistema multiagente atual:
-    #  - UniversalTrafficAgent (Features 1,4,6,7,8 parciais): coordena ambiente SUMO, ajusta tempos, prioriza emergência.
-    #  - TrafficMonitorAgent (Feature 3/8): regista veículos, detecta lentos, reporta métricas básicas.
-    #  - VehicleAgent (Feature 3): gera/monitora veículos, mede tempos de espera e solicita prioridade.
-    #  Pontos pendentes: agentes de semáforo individuais, agente de previsão de disrupções, módulo formal de métricas.
-    sumo_config = criar_arquivos_sumo("simple.sumocfg")
-    
-    print("🚀 Iniciando Sistema de Tráfego Inteligente...")
-    
-    # Criar agentes
-    traffic_controller = UniversalTrafficAgent(
-        "traffic_controller@localhost",
-        "senha",
-        sumo_config,
-        monitor_jid="monitor@localhost",
-        vehicle_jid="vehicle@localhost",
+    # 1) PATH
+    for nome in ("sumo-gui", "sumo"):
+        caminho = shutil.which(nome)
+        if caminho:
+            return caminho
+    candidatos.extend(filter(None, (shutil.which("sumo-gui"), shutil.which("sumo"))))
+
+    # 2) Inferir do SUMO_HOME (pkg macOS coloca bin dois níveis acima de share/sumo)
+    sumo_home = os.environ.get("SUMO_HOME")
+    if sumo_home:
+        bin_dir = os.path.normpath(os.path.join(sumo_home, "..", "..", "bin"))
+        for nome in ("sumo-gui", "sumo"):
+            caminho = os.path.join(bin_dir, nome)
+            if os.path.isfile(caminho) and os.access(caminho, os.X_OK):
+                return caminho
+
+    return candidatos[0] if candidatos else None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Abrir SUMO com o mapa atual.")
+    parser.add_argument(
+        "--config",
+        default="simple.sumocfg",
+        help="Arquivo .sumocfg a usar (nome dentro de sumo_files ou caminho absoluto).",
     )
-    
-    traffic_monitor = TrafficMonitorAgent(
-        "monitor@localhost", 
-        "senha",
-        controller_jid="traffic_controller@localhost"
-    )
+    args = parser.parse_args()
 
-    if sumo_config:
-        pattern_routes = []
-        tracked = {"ambulance0", "ambulance1", "ambulance2"}
-    else:
-        pattern_routes = [
-            {"id_prefix": "north", "start": (0, 220), "end": (0, -220), "spawn_interval": 5.5, "speed": 13.0},
-            {"id_prefix": "south", "start": (0, -220), "end": (0, 220), "spawn_interval": 6.0, "speed": 12.5},
-            {"id_prefix": "east", "start": (-220, 0), "end": (220, 0), "spawn_interval": 4.8, "speed": 13.5},
-            {"id_prefix": "west", "start": (220, 0), "end": (-220, 0), "spawn_interval": 5.2, "speed": 12.0},
-            {"id_prefix": "ambulance", "start": (-200, -40), "end": (200, -40), "spawn_interval": 45.0, "speed": 16.0, "vehicle_type": "ambulance"},
-        ]
-        tracked = set()
-    
-    vehicle_agent = VehicleAgent(
-        "vehicle@localhost",
-        "senha",
-        controller_jid="traffic_controller@localhost",
-        # tracked_vehicles={"ambulance0", "ambulance1", "ambulance2"},
-        monitor_jid="monitor@localhost",
-        tracked_vehicles=tracked,
-        pattern_routes=pattern_routes,
-        pattern_period=1.0,
-    )
-    
-    # Iniciar agentes
-    await traffic_controller.start()
-    await traffic_monitor.start()
-    await vehicle_agent.start()
-    
-    print("✅ Sistema iniciado. Pressione Ctrl+C para parar.")
-    
+    if not configurar_sumo():
+        print("Defina SUMO_HOME para apontar para a instalação do SUMO e tente novamente.")
+        return 1
+
     try:
-        await asyncio.Future()
-    except KeyboardInterrupt:
-        print("🛑 Parando sistema...")
-        await traffic_controller.stop()
-        await traffic_monitor.stop()
-        await vehicle_agent.stop()
+        config_path = _resolver_config(args.config)
+    except FileNotFoundError as exc:
+        print(exc)
+        return 1
+
+    sumo_bin = _encontrar_binario_sumo()
+    if not sumo_bin:
+        print("sumo-gui ou sumo não encontrados no PATH.")
+        return 1
+
+    print(f"Iniciando '{sumo_bin}' com '{config_path}'. Feche a janela do SUMO para encerrar.")
+    resultado = subprocess.run([sumo_bin, "-c", config_path])
+    return resultado.returncode
+
 
 if __name__ == "__main__":
-    spade.run(main())
+    sys.exit(main())
