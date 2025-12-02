@@ -8,6 +8,7 @@ from typing import Dict, Optional
 import spade
 from spade.xmpp_client import XMPPClient
 
+from agents.traffic_optimizer_agent import TrafficOptimizerAgent
 from agents.traffic_light_head_agent import TrafficLightHeadAgent
 from agents.vehicle_agent import VehicleAgent
 from setup_sumo import configurar_sumo, criar_arquivos_sumo
@@ -101,31 +102,48 @@ async def main() -> int:
     controller = TraCIController(sumo_bin, config_path, step_length=args.step_length)
     await controller.start()
 
+    # Coordenador central para arbitrar pedidos de verde dos cabeças de semáforo.
+    optimizer = TrafficOptimizerAgent(jid=f"optimizer@{args.domain}", password=args.password)
+    await optimizer.start()
+
     # Criar agentes por cabeça de semáforo (um por linkIndex controlado).
     async with controller.traci_guard() as traci_conn:
         tls_ids = list(traci_conn.trafficlight.getIDList())
         link_counts: Dict[str, int] = {}
+        lane_groups: Dict[str, list[tuple[int, str, list[int]]]] = {}
         for tl_id in tls_ids:
             links = traci_conn.trafficlight.getControlledLinks(tl_id)
             link_counts[tl_id] = len(links)
+            lane_to_indices: Dict[str, list[int]] = {}
+            for idx, link_tuple in enumerate(links):
+                incoming_lane = link_tuple[0][0] if link_tuple and link_tuple[0] else None
+                if not incoming_lane:
+                    continue
+                lane_to_indices.setdefault(incoming_lane, []).append(idx)
+            lane_groups[tl_id] = []
+            for group_idx, (lane_id, indices) in enumerate(lane_to_indices.items()):
+                lane_groups[tl_id].append((group_idx, lane_id, indices))
 
     traffic_light_agents = []
     for tl_id in tls_ids:
         count = link_counts.get(tl_id, 0)
-        for link_index in range(count):
+        for group_idx, lane_id, indices in lane_groups.get(tl_id, []):
             agent = TrafficLightHeadAgent(
-                jid=f"tl_{tl_id}_l{link_index}@{args.domain}",
+                jid=f"tl_{tl_id}_g{group_idx}@{args.domain}",
                 password=args.password,
                 traffic_light_id=tl_id,
-                link_index=link_index,
+                link_group_index=group_idx,
+                link_indices=indices,
                 link_count=count,
                 controller=controller,
+                lane_id=lane_id or "",
+                optimizer_jid=f"optimizer@{args.domain}",
             )
             await agent.start()
             traffic_light_agents.append(agent)
 
     vehicle_agents: Dict[str, VehicleAgent] = {}
-    print(f"🚦 Iniciando {len(traffic_light_agents)} agentes de semáforo (por cabeça); aguardando veículos da simulação...")
+    print(f"🚦 Iniciando {len(traffic_light_agents)} agentes de semáforo (por faixa de aproximação); aguardando veículos da simulação...")
 
     try:
         while True:
@@ -165,6 +183,7 @@ async def main() -> int:
             await agent.stop()
         for agent in traffic_light_agents:
             await agent.stop()
+        await optimizer.stop()
         await controller.close()
 
     print("✅ Simulação finalizada.")

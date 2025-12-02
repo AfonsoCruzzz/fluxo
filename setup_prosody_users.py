@@ -100,17 +100,28 @@ def _parse_sumo_config(config_path: str) -> Tuple[str, List[str]]:
     return net_path, route_paths
 
 
-def _link_counts(net_path: str) -> Dict[str, int]:
-    """Retorna quantas cabeças (linkIndex) cada TLS possui."""
-    counts: Dict[str, int] = {}
+def _lane_groups(net_path: str) -> Dict[str, List[Tuple[int, str, List[int]]]]:
+    """Agrupa linkIndex por faixa de entrada (lane) para cada TLS."""
     root = ET.parse(net_path).getroot()
+    tl_lane_indices: Dict[str, Dict[str, List[int]]] = {}
     for conn in root.findall("connection"):
         tl = conn.attrib.get("tl")
         if not tl:
             continue
         link_idx = int(conn.attrib.get("linkIndex", "0"))
-        counts[tl] = max(counts.get(tl, 0), link_idx + 1)
-    return counts
+        from_edge = conn.attrib.get("from")
+        from_lane = conn.attrib.get("fromLane")
+        if from_edge is None or from_lane is None:
+            continue
+        lane_id = f"{from_edge}_{from_lane}"
+        tl_lane_indices.setdefault(tl, {}).setdefault(lane_id, []).append(link_idx)
+
+    lane_groups: Dict[str, List[Tuple[int, str, List[int]]]] = {}
+    for tl, lanes in tl_lane_indices.items():
+        lane_groups[tl] = []
+        for group_idx, (lane_id, indices) in enumerate(lanes.items()):
+            lane_groups[tl].append((group_idx, lane_id, indices))
+    return lane_groups
 
 
 def _vehicle_ids(route_paths: Iterable[str]) -> List[str]:
@@ -133,11 +144,12 @@ def main() -> int:
         print(f"❌ Falha ao ler configuração SUMO: {exc}")
         return 1
 
-    link_counts = _link_counts(net_path)
+    lane_groups = _lane_groups(net_path)
     tls_accounts = []
-    for tl_id, count in link_counts.items():
-        for link_index in range(count):
-            tls_accounts.append((f"tl_{tl_id}_l{link_index}", args.domain, DEFAULT_PASSWORD))
+    for tl_id, groups in lane_groups.items():
+        for group_idx, _lane_id, _indices in groups:
+            tls_accounts.append((f"tl_{tl_id}_g{group_idx}", args.domain, DEFAULT_PASSWORD))
+    optimizer_account = [("optimizer", args.domain, DEFAULT_PASSWORD)]
     vehicle_ids = _vehicle_ids(route_paths)
     if args.max_vehicles is not None:
         vehicle_ids = vehicle_ids[: args.max_vehicles]
@@ -145,7 +157,7 @@ def main() -> int:
         (f"veh_{vid}", args.domain, DEFAULT_PASSWORD) for vid in vehicle_ids
     ]
 
-    accounts = tls_accounts + vehicle_accounts
+    accounts = optimizer_account + tls_accounts + vehicle_accounts
     if not accounts:
         print("Nada para registrar (nenhum semáforo ou veículo encontrado).")
         return 0

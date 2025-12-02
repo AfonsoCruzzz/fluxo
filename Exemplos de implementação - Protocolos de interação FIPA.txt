@@ -1,0 +1,125 @@
+from spade.agent import Agent
+from spade.behaviour import CyclicBehaviour, OneShotBehaviour
+from spade.message import Message
+from spade.template import Template
+import asyncio
+
+class ContractNetInitiator(Agent):
+    class InitiatorBehaviour(OneShotBehaviour):
+        async def run(self):
+            print("Iniciador: Envio de CFP")
+            # Enviar CFP para participantes
+            cfp = Message(to="participant_jid@server")  # substitua pelo JID real
+            cfp.set_metadata("performative", "cfp")
+            cfp.set_metadata("protocol", "fipa-contract-net")
+            cfp.body = "Requisito propostas para a tarefa X"
+            await self.send(cfp)
+
+            propostas = []
+            timeout = 5
+            while timeout > 0:
+                msg = await self.receive(timeout=1)
+                if msg and msg.get_metadata("performative") == "propose":
+                    print(f"Recebida proposta de {msg.sender}: {msg.body}")
+                    propostas.append(msg)
+                timeout -= 1
+
+            if propostas:
+                aceito = propostas[0]
+                print(f"Aceitando proposta de {aceito.sender}")
+                accept_msg = aceito.make_reply()
+                accept_msg.set_metadata("performative", "accept-proposal")
+                accept_msg.set_metadata("protocol", "fipa-contract-net")
+                await self.send(accept_msg)
+
+                for prop in propostas[1:]:
+                    reject_msg = prop.make_reply()
+                    reject_msg.set_metadata("performative", "reject-proposal")
+                    reject_msg.set_metadata("protocol", "fipa-contract-net")
+                    await self.send(reject_msg)
+
+                inform = await self.receive(timeout=5)
+                if inform and inform.get_metadata("performative") == "inform":
+                    print(f"Recebido inform: {inform.body}")
+            else:
+                print("Nenhuma proposta foi recebida")
+
+            await self.agent.stop()
+
+    async def setup(self):
+        self.add_behaviour(self.InitiatorBehaviour())
+
+if __name__ == "__main__":
+    initiator = ContractNetInitiator("initiator_jid@server", "senha")
+    future = initiator.start()
+    future.result()
+    while initiator.is_alive():
+        try:
+            asyncio.sleep(1)
+        except KeyboardInterrupt:
+            break
+    print("Iniciador finalizado")
+	
+-------------------------------------------------------------------------------------
+
+from spade.agent import Agent
+from spade.behaviour import CyclicBehaviour
+from spade.message import Message
+from spade.template import Template
+
+class ContractNetInitiator(Agent):
+    class InitiatorBehaviour(CyclicBehaviour):
+        async def run(self):
+            msg = await self.receive(timeout=10)
+            if msg:
+                # Processar mensagens cfp, propose, accept, reject, inform
+                pass
+
+    async def setup(self):
+        # Configurar template para protocol fipa-contract-net
+        template = Template()
+        template.set_metadata("protocol", "fipa-contract-net")
+        self.add_behaviour(self.InitiatorBehaviour(), template)
+
+-------------------------------------------------------------------------------------
+
+from spade.behaviour import CyclicBehaviour
+from spade.template import Template
+from spade.message import Message
+
+class FIPARequestResponder(CyclicBehaviour):
+    async def run(self):
+        msg = await self.receive(timeout=10)  # espera por mensagem
+        if msg and msg.protocol == "fipa-request":
+            if msg.performative == "request":
+                # lógica para tratar o pedido
+                reply = msg.make_reply()
+                reply.set_metadata("performative", "agree")
+                await self.send(reply)
+
+# anexar comportamento ao agente
+template = Template()
+template.set_metadata("protocol", "fipa-request")
+my_agent.add_behaviour(FIPARequestResponder(), template)
+
+-------------------------------------------------------------------------------------
+
+from spade.behaviour import OneShotBehaviour
+from spade.message import Message
+
+class FIPARequestRequester(OneShotBehaviour):
+    async def run(self):
+        msg = Message(to="responder_jid")  # JID do agente responder
+        msg.set_metadata("performative", "request")
+        msg.set_metadata("protocol", "fipa-request")
+        msg.body = "Por favor, execute a ação"
+        await self.send(msg)
+
+        # Espera respostas
+        response = await self.receive(timeout=10)
+        if response:
+            print(f"Received response: {response.get_metadata('performative')}")
+            # Espera mensagem final inform
+            inform = await self.receive(timeout=10)
+            if inform and inform.get_metadata("performative") == "inform":
+                print(f"Received inform: {inform.body}")
